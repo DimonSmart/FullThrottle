@@ -1,7 +1,5 @@
 using FullThrottle;
-using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using Xunit;
 using Xunit.Abstractions;
@@ -22,10 +20,23 @@ namespace FullThrottleTest
         public void SimpleRunnerBuilder()
         {
             var runner = RunnerBuilder<string>
-                .Create(Source, (line, lineNumber) => { return; })
+                .Create((line, lineNumber) => { return; })
                 .Build();
-            runner.Run(CancellationToken.None);
+
+            runner.Run(Source, CancellationToken.None);
         }
+
+        [Fact]
+        public void SimpleRunnerBuildAndRunTwice()
+        {
+            var runner = RunnerBuilder<string>
+                .Create((line, lineNumber) => { return; })
+                .Build();
+
+            runner.Run(Source, CancellationToken.None);
+            runner.Run(Source, CancellationToken.None);
+        }
+
 
         private static readonly IEnumerable<string> Source = new[] { "A", "B", "C" };
     }

@@ -10,27 +10,34 @@ namespace FullThrottleConsole
         public static void Main()
         {
             Console.WriteLine("Hello, World!");
-
-            var lines = new List<string> { "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I", "A", "B", "C", "D", "E", "F", "G", "H", "I" };
+            IEnumerable<string> lines = GetSource();
 
             var runner = RunnerBuilder<string>
-                .Create(lines, (line, lineNumber) => Work(line, lineNumber))
+                .Create((line, lineNumber) => Work(line, lineNumber))
                 .OnError((line, e, lineNumber) => { Console.WriteLine($"Error. Line:{line} Number:{lineNumber} Error:{e.Message}"); })
-                .OnSuccess((line, lineNumber) => { Console.WriteLine($"Finish. Line:{line} Number:{lineNumber}"); })
-                .WithMaximumRunningTasksLimit(20)
-                .WithMaximumTasksPerSecondLimit(5)
+                .WithMaximumRunningTasksLimit(2)
+                .WithMaximumTasksPerIntervalLimit(2, TimeSpan.FromSeconds(5))
+                .WithMinimumTaskRunInterval(TimeSpan.FromSeconds(2))
+                .WithDiagnosticInfo(LogIt)
+                .ForceNewThreadCreation()
                 .Build();
-            runner.Run(CancellationToken.None);
+            runner.Run(lines, CancellationToken.None);
         }
-        static void Work(string line, int lineNumber)
+
+        private static IEnumerable<string> GetSource()
+        {
+            return Enumerable.Range('a', 'z' - 'a' + 1).Union(Enumerable.Range('A', 'Z' - 'A' + 1)).Select(i => ((char)i).ToString());
+        }
+
+        private static void Work(string line, int lineNumber)
         {
             Console.WriteLine($"Work start. Line:{line} Number:{lineNumber}");
-            var delaySeconds = 5 + _random.Next(5);
+            var delaySeconds = 5 + _random.Next(4);
             Thread.Sleep(TimeSpan.FromSeconds(delaySeconds));
             Console.WriteLine($"Work. Finish. Line:{line} Number:{lineNumber}");
         }
 
-        private static void LogIt(IEnumerable<TaskInfo> tasks)
+        private static void LogIt(string message, IEnumerable<TaskInfo> tasks)
         {
             var now = DateTime.Now;
             var sb = new StringBuilder();
@@ -42,7 +49,7 @@ namespace FullThrottleConsole
 
             if (tasks.TryGetNonEnumeratedCount(out int count))
             {
-                Console.WriteLine($"{count} {sb}");
+                Console.WriteLine($"{message} {count} {sb}");
             }
         }
     }

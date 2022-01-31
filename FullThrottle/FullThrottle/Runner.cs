@@ -1,90 +1,114 @@
-﻿namespace FullThrottle
+﻿using System.Collections.Concurrent;
+
+namespace FullThrottle
 {
     public class Runner<T>
     {
-        public Action<IEnumerable<TaskInfo>>? OnNextForDebugOnly;
+        private readonly RunnerParameters<T> _parameters;
 
-        private IList<TaskInfo> runnningTasks = new List<TaskInfo>();
-        private readonly int _maximumRunningTasksLimit = 10;
-        private readonly int _maximumTasksPerSecondLimit = 4;
-        private readonly IEnumerable<T> _source;
-        private readonly Action<T, int> _action;
-        private readonly Action<T, int>? _onSuccess;
-        private readonly Action<T, Exception, int>? _onError;
-
-
-        public Runner(IEnumerable<T> source, Action<T, int> action, Action<T, int>? onSuccess,
-            Action<T, Exception, int>? onError, int maximumRunningTasksLimit, int maximumTasksPerSecondLimit)
+        public Runner(RunnerParameters<T> parameters)
         {
-            _source = source;
-            _action = action;
-            _onSuccess = onSuccess;
-            _onError = onError;
-            _maximumRunningTasksLimit = maximumRunningTasksLimit;
-            _maximumTasksPerSecondLimit = maximumTasksPerSecondLimit;
+            _parameters = parameters;
         }
 
-        public void Run(CancellationToken cancellationToken)
+        public void Run(IEnumerable<T> source, CancellationToken cancellationToken)
         {
-            var enumerator = _source.GetEnumerator();
-            var lineNumber = 0;
-            while (true)
+            List<TaskInfo> runningTasks = new();
+            using (var enumerator = source.GetEnumerator())
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var now = DateTime.Now;
-
-                OnNextForDebugOnly?.Invoke(runnningTasks);
-
-                if (CanRun())
+                var lineNumber = 0;
+                while (true)
                 {
-                    if (!enumerator.MoveNext())
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var now = DateTime.Now;
+
+                    if (CanRun(runningTasks))
                     {
-                        break;
+                        if (!enumerator.MoveNext())
+                        {
+                            break;
+                        }
+                        lineNumber++;
+                        runningTasks.Add(RunTask(enumerator.Current, lineNumber, cancellationToken));
+                        Debug(runningTasks, "Task run");
                     }
-                    lineNumber++;
-                    RunTask(enumerator.Current, lineNumber, cancellationToken);
-                }
-                else
-                {
-                    var oldestTaskRunningTime = runnningTasks.Select(i => (int)(now - i.StartTime).TotalMilliseconds).Where(i => i < 1000).OrderByDescending(i => i).FirstOrDefault();
-                    var allTasks = runnningTasks.Select(i => i.Task).ToArray();
-                    var idx = Task.WaitAny(allTasks, 1000 - oldestTaskRunningTime, cancellationToken);
-                    runnningTasks = runnningTasks.Where(i => !i.Task.IsCompleted).ToList();
+                    else
+                    {
+                        runningTasks = WaitNextIteration(runningTasks, now, cancellationToken);
+                    }
                 }
             }
-            Task.WaitAll(runnningTasks.Select(i => i.Task).ToArray(), cancellationToken);
+            Task.WaitAll(runningTasks.Select(i => i.Task).ToArray(), cancellationToken);
+            Debug(runningTasks, "Tail finish wait");
         }
 
-        void RunTask(T line, int lineNumber, CancellationToken cancellationToken)
+        private List<TaskInfo> WaitNextIteration(List<TaskInfo> runningTasks, DateTime now, CancellationToken cancellationToken)
         {
+            var yangestTaskRunningTime = runningTasks.Select(i => now - i.StartTime).Where(i => i < _parameters.Interval).OrderByDescending(i => i).FirstOrDefault();
+            var allTasks = runningTasks.Select(i => i.Task).ToArray();
+            var timeToNextInterval = (int)(_parameters.Interval - yangestTaskRunningTime).TotalMilliseconds;
+            Task.WaitAny(allTasks, timeToNextInterval, cancellationToken);
+            runningTasks = runningTasks
+                .Where(i => (now - i.StartTime) > _parameters.Interval / _parameters.MaximumTasksPerIntervalLimit)
+                .Where(i => !i.Task.IsCompleted).ToList();
+            Debug(runningTasks, "Wait for run");
+            return runningTasks;
+        }
+
+        private void Debug(List<TaskInfo> runningTasks, string s)
+        {
+            _parameters.OnNextForDebugOnly?.Invoke(s, runningTasks);
+        }
+
+        TaskInfo RunTask(T line, int lineNumber, CancellationToken cancellationToken)
+        {
+            var taskCreationOption = _parameters.UseThreadPool ? TaskCreationOptions.None : TaskCreationOptions.LongRunning;
             var t = new Task(() =>
             {
                 try
                 {
-                    _action(line, lineNumber);
-                    _onSuccess?.Invoke(line, lineNumber);
+                    _parameters.Action(line, lineNumber);
+                    _parameters.OnSuccess?.Invoke(line, lineNumber);
                 }
                 catch (Exception exception)
                 {
-                    _onError?.Invoke(line, exception, lineNumber);
+                    _parameters.OnError?.Invoke(line, exception, lineNumber);
                     throw;
                 }
 
-            }, cancellationToken); 
-            var taskInfo = new TaskInfo(t);
-            runnningTasks.Add(taskInfo);
+            }, cancellationToken, taskCreationOption);
             t.Start(TaskScheduler.Default);
+            return new TaskInfo(t);
         }
 
-        bool CanRun()
+        bool CanRun(List<TaskInfo> runningTasks)
         {
             var now = DateTime.Now;
-            if (runnningTasks.Count(i => !i.Task.IsCompleted) < _maximumRunningTasksLimit &&
-                runnningTasks.Count(i => (now - i.StartTime).TotalMilliseconds < 1000) < _maximumTasksPerSecondLimit)
+
+            var minimumTaskRunIntervalCondition = GetYoungestTaskRunningTimeOrMaximum(runningTasks, now) >= _parameters.MinimumTaskRunInterval;
+            var maximumRunningTasksCondition = GetNotFinishedTasksCount(runningTasks) < _parameters.MaximumRunningTasksLimit;
+            var taskStartedInTheIntervalCondition = GetLastIntervalStartedTasksCount(runningTasks, now) < _parameters.MaximumTasksPerIntervalLimit;
+
+            return minimumTaskRunIntervalCondition && maximumRunningTasksCondition && taskStartedInTheIntervalCondition;
+        }
+
+        private static TimeSpan GetYoungestTaskRunningTimeOrMaximum(List<TaskInfo> runningTasks, DateTime now)
+        {
+            if (runningTasks.Count == 0)
             {
-                return true;
+                return TimeSpan.MaxValue;
             }
-            return false;
+            return runningTasks.OrderByDescending(i => i.StartTime).Select(i => now - i.StartTime).First();
+        }
+
+        private static int GetNotFinishedTasksCount(List<TaskInfo> runningTasks)
+        {
+            return runningTasks.Count(i => !i.Task.IsCompleted);
+        }
+
+        private int GetLastIntervalStartedTasksCount(List<TaskInfo> runningTasks, DateTime now)
+        {
+            return runningTasks.Count(i => (now - i.StartTime) < _parameters.Interval);
         }
     }
 
