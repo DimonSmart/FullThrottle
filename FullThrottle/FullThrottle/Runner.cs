@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+﻿using static FullThrottle.RunningTasksTimeUtils;
 
 namespace FullThrottle
 {
@@ -6,7 +6,7 @@ namespace FullThrottle
     {
         private readonly RunnerParameters<T> _parameters;
 
-        public Runner(RunnerParameters<T> parameters)
+        internal Runner(RunnerParameters<T> parameters)
         {
             _parameters = parameters;
         }
@@ -78,7 +78,7 @@ namespace FullThrottle
 
             }, cancellationToken, taskCreationOption);
             t.Start(TaskScheduler.Default);
-            return new TaskInfo(t);
+            return new TaskInfo(DateTime.Now, t);
         }
 
         bool CanRun(List<TaskInfo> runningTasks)
@@ -87,39 +87,18 @@ namespace FullThrottle
 
             var minimumTaskRunIntervalCondition = GetYoungestTaskRunningTimeOrMaximum(runningTasks, now) >= _parameters.MinimumTaskRunInterval;
             var maximumRunningTasksCondition = GetNotFinishedTasksCount(runningTasks) < _parameters.MaximumRunningTasksLimit;
-            var taskStartedInTheIntervalCondition = GetLastIntervalStartedTasksCount(runningTasks, now) < _parameters.MaximumTasksPerIntervalLimit;
+            var taskStartedInTheIntervalCondition = GetLastIntervalStartedTasksCount(runningTasks, now, _parameters.Interval) < _parameters.MaximumTasksPerIntervalLimit;
 
             return minimumTaskRunIntervalCondition && maximumRunningTasksCondition && taskStartedInTheIntervalCondition;
-        }
-
-        private static TimeSpan GetYoungestTaskRunningTimeOrMaximum(List<TaskInfo> runningTasks, DateTime now)
-        {
-            if (runningTasks.Count == 0)
-            {
-                return TimeSpan.MaxValue;
-            }
-            return runningTasks.OrderByDescending(i => i.StartTime).Select(i => now - i.StartTime).First();
         }
 
         private static int GetNotFinishedTasksCount(List<TaskInfo> runningTasks)
         {
             return runningTasks.Count(i => !i.Task.IsCompleted);
         }
-
-        private int GetLastIntervalStartedTasksCount(List<TaskInfo> runningTasks, DateTime now)
-        {
-            return runningTasks.Count(i => (now - i.StartTime) < _parameters.Interval);
-        }
     }
 
-    public class TaskInfo
-    {
-        public TaskInfo(Task task)
-        {
-            Task = task;
-            StartTime = DateTime.Now;
-        }
-        public DateTime StartTime { get; set; }
-        public Task Task { get; set; }
-    }
+    public record TaskInfoBase(DateTime StartTime);
+
+    public record TaskInfo(DateTime StartTime, Task Task) : TaskInfoBase(StartTime);
 }

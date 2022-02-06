@@ -8,11 +8,11 @@ namespace FullThrottleTest
 {
     public class RunnerBuilderTest
     {
-        private readonly ITestOutputHelper output;
+        private readonly ITestOutputHelper _output;
 
         public RunnerBuilderTest(ITestOutputHelper output)
         {
-            this.output = output;
+            _output = output;
         }
 
 
