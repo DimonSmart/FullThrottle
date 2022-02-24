@@ -49,8 +49,8 @@ namespace FullThrottle
             var timeToNextInterval = (int)(_parameters.Interval - yangestTaskRunningTime).TotalMilliseconds;
             Task.WaitAny(allTasks, timeToNextInterval, cancellationToken);
             runningTasks = runningTasks
-                .Where(i => (now - i.StartTime) > _parameters.Interval / _parameters.MaximumTasksPerIntervalLimit)
-                .Where(i => !i.Task.IsCompleted).ToList();
+                .Where(i => (now - i.StartTime) < _parameters.Interval / _parameters.MaximumTasksPerIntervalLimit || !i.Task.IsCompleted)
+                .ToList();
             Debug(runningTasks, "Wait for run");
             return runningTasks;
         }
